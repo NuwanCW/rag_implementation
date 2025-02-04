@@ -1,0 +1,351 @@
+# import os
+# import time
+# import logging
+# import fitz  # PyMuPDF (for PDF text extraction)
+# from watchdog.observers import Observer
+# from watchdog.events import FileSystemEventHandler
+# from sentence_transformers import SentenceTransformer
+# import chromadb
+# from chromadb.config import Settings
+# # Set up logging
+# logging.basicConfig(level=logging.INFO)
+
+# # Initialize the Sentence-BERT model and Chromadb client
+# model = SentenceTransformer('all-MiniLM-L6-v2')
+# client = chromadb.HttpClient(host="chromadb-container", port = 8000, settings=Settings(allow_reset=True, anonymized_telemetry=False))
+# # client = chromadb.Client()
+
+# # This will create the "documents" collection if it doesn't exist already
+# collection = client.get_or_create_collection("documents")
+
+# # Directory to watch
+# WATCH_DIRECTORY = "/app/source_documents"  # This directory will be mapped via Docker volumes
+
+# # Initialize a file system event handler to monitor the folder
+# class FileHandler(FileSystemEventHandler):
+#     def on_created(self, event):
+#         if event.is_directory:
+#             return
+#         file_path = event.src_path
+#         logging.info(f"New file detected: {file_path}")
+#         process_new_document(file_path)
+
+# # Function to extract text from PDF
+# def extract_text_from_pdf(pdf_path):
+#     """Extracts text from PDF using PyMuPDF (fitz)."""
+#     try:
+#         doc = fitz.open(pdf_path)
+#         text = ""
+#         for page in doc:
+#             text += page.get_text()
+#         return text
+#     except Exception as e:
+#         logging.error(f"Error extracting text from {pdf_path}: {e}")
+#         return None
+
+# # Function to process the document
+# def process_new_document(file_path):
+#     """Extract text from the document and store it in Chromadb."""
+#     # Extract text depending on file type (only PDFs supported in this example)
+#     file_path = str(file_path)
+#     logging.info(f"file path isssssssss {file_path}")
+#     if file_path.endswith(".pdf"):
+#         document_text = extract_text_from_pdf(file_path)
+#     elif file_path.endswith(".txt"):
+#         logging.info(f"open file path : {str(file_path)}")
+#         with open(f'{file_path.strip()}', 'r') as file:
+#             document_text = file.read()
+#             print(document_text)
+#     else:
+#         logging.warning(f"Unsupported file type: {file_path}")
+#         return
+
+#     if document_text:
+#         # Create embeddings for the document
+#         embeddings = model.encode([document_text])
+
+#         # Generate a unique document ID (could be based on file name or UUID)
+#         document_id = os.path.basename(file_path)
+
+#         # Check if the document already exists and delete it if necessary
+#         existing_documents = collection.get(ids=[document_id])
+#         if existing_documents:
+#             collection.delete(ids=[document_id])
+#             logging.info(f"Document {document_id} replaced in Chromadb.")
+
+#         # Store the document in Chromadb
+#         collection.add(documents=[document_text],embeddings=[embeddings[0]],metadatas=[{"source": file_path}],ids=[document_id])
+
+#         logging.info(f"Document {document_id} added to Chromadb.")
+#     else:
+#         logging.info(f"read document_text {document_text} ")
+    
+
+# # Set up the file system observer to watch the directory
+# def watch_directory():
+#     """Watch the specified directory for new files."""
+#     event_handler = FileHandler()
+#     observer = Observer()
+#     observer.schedule(event_handler, WATCH_DIRECTORY, recursive=False)
+#     observer.start()
+    
+#     try:
+#         while True:
+#             time.sleep(10)  # Check every 10 seconds
+#     except KeyboardInterrupt:
+#         observer.stop()
+#     observer.join()
+
+# if __name__ == "__main__":
+#     watch_directory()
+
+# ======================
+
+# import os
+# import time
+# import logging
+# import fitz  # PyMuPDF (for PDF text extraction)
+# from watchdog.observers import Observer
+# from watchdog.events import FileSystemEventHandler
+# from sentence_transformers import SentenceTransformer
+# import chromadb
+# from chromadb.config import Settings
+
+# # Set up logging
+# logging.basicConfig(level=logging.INFO)
+
+# # Initialize the Sentence-BERT model and Chromadb client
+# model = SentenceTransformer('all-MiniLM-L6-v2')
+# client = chromadb.HttpClient(host="chromadb-container", port=8000, settings=Settings(allow_reset=True, anonymized_telemetry=False))
+
+# # This will create the "documents" collection if it doesn't exist already
+# collection = client.get_or_create_collection("documents")
+
+# # Directory to watch
+# WATCH_DIRECTORY = "/app/source_documents"  # This directory will be mapped via Docker volumes
+
+# # Initialize a file system event handler to monitor the folder
+# class FileHandler(FileSystemEventHandler):
+#     def on_created(self, event):
+#         if event.is_directory:
+#             return
+#         file_path = event.src_path
+#         logging.info(f"New file detected: {file_path}")
+#         process_new_document(file_path)
+
+# # Function to extract text from PDF
+# def extract_text_from_pdf(pdf_path):
+#     """Extracts text from PDF using PyMuPDF (fitz)."""
+#     try:
+#         doc = fitz.open(pdf_path)
+#         text = ""
+#         for page in doc:
+#             text += page.get_text()
+#         return text
+#     except Exception as e:
+#         logging.error(f"Error extracting text from {pdf_path}: {e}")
+#         return None
+
+# # Function to process the document
+# # import chardet
+
+# # Function to process the document
+# def process_new_document(file_path):
+#     """Extract text from the document and store it in Chromadb."""
+#     try:
+#         file_path = file_path.strip()
+#         logging.info(f"Processing file: {file_path}")
+        
+#         # Check if the file exists
+#         if not os.path.isfile(file_path):
+#             logging.error(f"File does not exist or is not a regular file: {file_path}")
+#             return
+
+#         # Try to read the file
+#         document_text = None
+#         if file_path.endswith(".pdf"):
+#             document_text = extract_text_from_pdf(file_path)
+#         elif file_path.endswith(".txt"):
+#             logging.info(f"Opening text file: {file_path}")
+#             try:
+#                 # Try reading file in binary mode first
+#                 with open(file_path, 'rb') as file:
+#                     raw_data = file.read()
+#                     logging.info(f"Read {len(raw_data)} bytes in binary mode.")
+#                     logging.debug(f"First 200 bytes: {raw_data[:200]}")
+
+#                     # Attempt to decode it as UTF-8
+#                     document_text = raw_data.decode('utf-8', errors='ignore')
+#                     logging.info(f"Document length after decoding: {len(document_text)}")
+#                     logging.debug(f"Document content preview: {document_text[:200]}...")
+                
+#                 if not document_text.strip():
+#                     logging.warning(f"The file {file_path} is empty or only contains whitespace.")
+#                     return
+#             except Exception as e:
+#                 logging.error(f"Error reading file {file_path}: {e}")
+#                 return
+#         else:
+#             logging.warning(f"Unsupported file type: {file_path}")
+#             return
+
+#         # If document text was successfully extracted, proceed with storing it
+#         if document_text:
+#             embeddings = model.encode([document_text])
+#             document_id = os.path.basename(file_path)
+
+#             # Check if the document already exists in Chromadb
+#             existing_documents = collection.get(ids=[document_id])
+#             if existing_documents:
+#                 collection.delete(ids=[document_id])
+#                 logging.info(f"Document {document_id} replaced in Chromadb.")
+
+#             # Store the document in Chromadb
+#             collection.add(documents=[document_text], embeddings=[embeddings[0]], metadatas=[{"source": file_path}], ids=[document_id])
+#             logging.info(f"Document {document_id} added to Chromadb.")
+#         else:
+#             logging.warning(f"No document text extracted for file: {file_path}")
+
+#     except Exception as e:
+#         logging.error(f"Error processing document {file_path}: {e}")
+
+# # Set up the file system observer to watch the directory
+# def watch_directory():
+#     """Watch the specified directory for new files."""
+#     event_handler = FileHandler()
+#     observer = Observer()
+#     observer.schedule(event_handler, WATCH_DIRECTORY, recursive=False)
+#     observer.start()
+    
+#     try:
+#         while True:
+#             time.sleep(10)  # Check every 10 seconds
+#     except KeyboardInterrupt:
+#         observer.stop()
+#     observer.join()
+
+# if __name__ == "__main__":
+#     watch_directory()
+
+
+import os
+import time
+import logging
+import pyinotify  # for inotify-based file watching
+from sentence_transformers import SentenceTransformer
+import chromadb
+from chromadb.config import Settings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import SKLearnVectorStore
+from langchain_nomic.embeddings import NomicEmbeddings
+
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize the Sentence-BERT model and Chromadb client
+# model = SentenceTransformer('all-MiniLM-L6-v2')
+embedding_model = NomicEmbeddings(model="nomic-embed-text-v1.5", inference_mode="local")
+client = chromadb.HttpClient(host="chromadb-container", port=8000, settings=Settings(allow_reset=True, anonymized_telemetry=False))
+
+# Create or get the "documents" collection
+collection = client.get_or_create_collection("documents")
+
+# Directory to watch
+WATCH_DIRECTORY = "/app/source_documents"  # This directory should be mapped via Docker volumes
+
+# Function to extract text from the document
+def process_new_document(file_path):
+    """Process a new document and add it to Chromadb."""
+    try:
+        logger.info(f"Processing file: {file_path}")
+        
+        # Check if file exists
+        if not os.path.exists(file_path):
+            logger.warning(f"File does not exist: {file_path}")
+            return
+
+        # Read the document's content
+        with open(file_path, 'r') as file:
+            document_text = file.read()
+            logger.info(f"Read document length: {len(document_text)}")
+            logger.debug(f"Document text (first 100 chars): {document_text[:100]}")
+        
+        if document_text.strip():  # Only process non-empty documents
+            # Create embeddings for the document
+            text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+                chunk_size=1000, chunk_overlap=200
+            )
+            doc_splits = text_splitter.create_documents([document_text])
+
+            for i, doc_chunk in enumerate(doc_splits):
+                chunk_text = doc_chunk.page_content
+                chunk_id = f"{os.path.basename(file_path)}_chunk_{i}"
+
+                # Generate embeddings
+                embeddings = embedding_model.embed_documents([chunk_text])[0]
+
+                existing_documents = collection.get(ids=[chunk_id])
+                if existing_documents:
+                    collection.delete(ids=[chunk_id])
+                    logger.info(f"Document {chunk_id} replaced in Chromadb.")
+                # Store in ChromaDB
+                collection.add(
+                    documents=[chunk_text],
+                    embeddings=[embeddings],
+                    metadatas=[{"source": file_path, "chunk_index": i}],
+                    ids=[chunk_id]
+                )
+
+
+            # embeddings = model.encode([document_text])
+
+            # Generate a unique document ID (could be based on file name or UUID)
+            # document_id = os.path.basename(file_path)
+
+            # Check if the document already exists and delete it if necessary
+            # existing_documents = collection.get(ids=[document_id])
+            # if existing_documents:
+            #     collection.delete(ids=[document_id])
+            #     logger.info(f"Document {document_id} replaced in Chromadb.")
+
+            # # Store the document in Chromadb
+            # collection.add(documents=[document_text], embeddings=[embeddings[0]], metadatas=[{"source": file_path}], ids=[document_id])
+            logger.info(f"Processed {len(doc_splits)} chunks from {file_path} into ChromaDB.")
+        else:
+            logger.warning(f"The file {file_path} is empty or contains only whitespace.")
+
+    except Exception as e:
+        logger.error(f"Error processing file {file_path}: {e}")
+
+# Inotify event handler class
+class EventHandler(pyinotify.ProcessEvent):
+    def process_IN_CREATE(self, event):
+        """Triggered when a new file is created."""
+        file_path = event.pathname
+        logger.info(f"New file detected: {file_path}")
+        process_new_document(file_path)
+
+    def process_IN_MODIFY(self, event):
+        """Triggered when a file is modified."""
+        file_path = event.pathname
+        logger.info(f"File modified: {file_path}")
+        process_new_document(file_path)
+
+def monitor_directory():
+    """Monitor the directory for file events using pyinotify."""
+    logger.info("Starting to monitor directory...")
+    
+    wm = pyinotify.WatchManager()  # Create a WatchManager instance
+    handler = EventHandler()  # Instantiate the event handler
+    notifier = pyinotify.Notifier(wm, handler)  # Create a Notifier instance
+    
+    # Add watch for the directory (IN_CREATE event when files are created)
+    wm.add_watch(WATCH_DIRECTORY, pyinotify.IN_CREATE | pyinotify.IN_MODIFY)
+
+    # Start monitoring the directory
+    notifier.loop()
+
+if __name__ == "__main__":
+    monitor_directory()

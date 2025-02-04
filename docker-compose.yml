@@ -1,0 +1,106 @@
+version: '3.8'
+
+services:
+  ollama-container:
+      image: ollama/ollama
+      container_name: ollama-container
+      runtime: nvidia # This ensures it uses the NVIDIA runtime for GPUs
+      environment:
+        - NVIDIA_VISIBLE_DEVICES=all
+      volumes:
+        - ./ollama_data:/root/.ollama
+        - ./ollama_data/entrypoint.sh:/entrypoint.sh
+      ports:
+        - "11434:11434"
+      entrypoint: "/entrypoint.sh"
+      deploy:
+        resources:
+          limits:
+            memory: 9G  # Adjust the memory limit as needed
+      restart: always
+      stdin_open: true
+      tty: true
+
+  chroma-server:
+    image: chroma-server
+    build:
+      dockerfile: chromadb/Dockerfile
+    volumes:
+      - ./chromadb/chroma-data:/chroma/chroma
+      - ./chromadb/server.htpasswd:/chroma/server.htpasswd
+    command: "--workers 1 --host 0.0.0.0 --port 8000 --proxy-headers --log-config chromadb/log_config.yml --timeout-keep-alive 30"
+    environment:
+      - IS_PERSISTENT=TRUE
+      # - CHROMA_SERVER_AUTH_PROVIDER=${CHROMA_SERVER_AUTH_PROVIDER}
+      # - CHROMA_SERVER_AUTH_CREDENTIALS_FILE=${CHROMA_SERVER_AUTH_CREDENTIALS_FILE}
+      # - CHROMA_SERVER_AUTH_CREDENTIALS=${CHROMA_SERVER_AUTH_CREDENTIALS}
+      # - CHROMA_SERVER_AUTH_CREDENTIALS_PROVIDER=${CHROMA_SERVER_AUTH_CREDENTIALS_PROVIDER}
+      # - CHROMA_SERVER_AUTH_TOKEN_TRANSPORT_HEADER=${CHROMA_SERVER_AUTH_TOKEN_TRANSPORT_HEADER}
+      - PERSIST_DIRECTORY=${PERSIST_DIRECTORY:-/chroma/chroma}
+      - CHROMA_OTEL_EXPORTER_ENDPOINT=${CHROMA_OTEL_EXPORTER_ENDPOINT}
+      - CHROMA_OTEL_EXPORTER_HEADERS=${CHROMA_OTEL_EXPORTER_HEADERS}
+      - CHROMA_OTEL_SERVICE_NAME=${CHROMA_OTEL_SERVICE_NAME}
+      - CHROMA_OTEL_GRANULARITY=${CHROMA_OTEL_GRANULARITY}
+      - CHROMA_SERVER_NOFILE=${CHROMA_SERVER_NOFILE}
+    restart: unless-stopped # possible values are: "no", always", "on-failure", "unless-stopped"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      # Adjust below to match your container port
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+  # chromadb-container:
+  #   # image: ghcr.io/chroma-core/chroma:latest  # Chroma DB container image
+  #   image: chromadb/chroma
+  #   container_name: chromadb-container
+  #   volumes:
+  #     - ./chromadb/chroma_data:/chroma
+  #     - ./chromadb/chromadb:/chromadb  # Persist Chroma DB data
+  #   environment:
+  #     - PERSIST_DIRECTORY=/chroma
+  #   ports:
+  #     - "6333:6333"  # Expose Chroma's REST API for retrieval
+  #     - 8000:8000
+  #   restart: always
+
+  rag-service:
+    build: ./rag-service  # Custom service that runs your RAG logic
+    container_name: rag-service
+    runtime: nvidia # This ensures it uses the NVIDIA runtime for GPUs
+    depends_on:
+      - ollama-container
+      - chroma-server
+    environment:
+      - OLLAMA_HOST=ollama-container:11434  # The Ollama service's endpoint
+      - CHROMADB_HOST=chromadb-container:8000  # The Chroma DB's endpoint
+      - NVIDIA_VISIBLE_DEVICES=all
+    ports:
+      - "9005:9005"  # Expose your service to interact with the whole RAG system
+    volumes:
+      - ./rag-service:/app
+    restart: always
+
+
+  document-watcher:
+    build: ./document-watcher
+    container_name: document-watcher
+    runtime: nvidia # This ensures it uses the NVIDIA runtime for GPUs
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    # environment:
+    #   - CHROMA_API_KEY=your-chroma-api-key  # Same key as for Chroma DB
+    #   - WATCH_DIRECTORY=/watched-docs  # Directory to watch for new documents
+    volumes:
+      - ./document-watcher:/app  # Shared volume for the watched directory
+      - ./document-watcher/source_documents:/app/source_documents
+    depends_on:
+      - chroma-server
+    restart: always
+
+# # instructions
+# # docker compose up
+# # then put the txt files to document-watcher/source_documents then wait it to finish
+# # try this 
+# # curl -X POST http://localhost:9005/query     -H "Content-Type: application/json"     -d '{"question": "what is secret of success?"}'

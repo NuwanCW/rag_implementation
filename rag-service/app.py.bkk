@@ -1,0 +1,207 @@
+from flask import Flask, request, jsonify
+from pydantic import BaseModel
+from sentence_transformers import SentenceTransformer
+import requests
+import logging
+import json
+from langchain.llms.base import LLM
+from langchain.vectorstores import FAISS
+from langchain.chains import RetrievalQA
+from langchain.embeddings import OpenAIEmbeddings
+from langchain.schema import Document
+
+# Initialize Flask app
+app = Flask(__name__)
+
+# Sentence-BERT model for embeddings
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+# ChromaDB HTTP Client
+from chromadb.config import Settings
+import chromadb
+
+chroma_client = chromadb.HttpClient(
+    host="chromadb-container",
+    port=8000,
+    settings=Settings(allow_reset=True, anonymized_telemetry=False),
+)
+
+# Llama API configuration
+ollama_host = "http://ollama-container:11434"
+
+# Logging setup
+logging.basicConfig(level=logging.INFO)
+
+# Define a custom LLM class for LangChain
+class CustomLlamaLLM(LLM):
+    def __init__(self, api_url: str=f"{ollama_host}/api/generate"):
+        self.api_url = api_url
+    def _call(self, prompt: str, stop=None) -> str:
+        try:
+            payload = {
+                "model": "llama3:latest",
+                "prompt": prompt,
+            }
+            response = requests.post(self.api_url, json=payload, stream=True)
+            if response.status_code == 200:
+                full_response = ""
+                for line in response.iter_lines():
+                    if line:
+                        try:
+                            result = json.loads(line.decode('utf-8'))
+                            full_response += result.get("response", "")
+                            if result.get("done", False):
+                                break
+                        except json.JSONDecodeError as e:
+                            logging.error(f"JSON decode error: {e}")
+                            continue
+                return full_response.strip()
+            else:
+                logging.error(f"Ollama API error: {response.status_code}, {response.text}")
+                return "Error: Unable to generate response."
+        except requests.exceptions.RequestException as e:
+            logging.error(f"API request error: {e}")
+            return "Error: Unable to reach Ollama API."
+    @property
+    def _identifying_params(self):
+        return {"api_url": self.api_url}
+    @property
+    def _llm_type(self) -> str:
+        return "custom_llama_llm"
+
+# Initialize custom Llama LLM
+llama_llm = CustomLlamaLLM(api_url=f"{ollama_host}/api/generate")
+
+# Request schema for query input
+class QueryRequest(BaseModel):
+    query: str
+    top_k: int = 1
+
+# Define a function to retrieve documents using ChromaDB
+def retrieve_relevant_documents(query: str, top_k: int = 1):
+    try:
+        query_embedding = model.encode(query)
+        collection = chroma_client.get_collection("documents")
+        results = collection.query(query_embeddings=[query_embedding], n_results=top_k)
+        documents = results['documents']
+        return [Document(page_content=doc) for doc in documents]
+    except Exception as e:
+        logging.error(f"Error retrieving documents: {e}")
+        return []
+
+# Define the RAG pipeline
+def create_retrieval_qa_chain():
+    embeddings = OpenAIEmbeddings()  # You can replace this with custom embeddings if needed
+    retriever = FAISS.load_local("faiss_index_path", embeddings).as_retriever()
+    return RetrievalQA.from_chain_type(
+        llm=llama_llm,
+        retriever=retriever,
+        chain_type="stuff",
+    )
+
+# Initialize the QA chain
+qa_chain = create_retrieval_qa_chain()
+
+# API route for query handling
+@app.route("/query", methods=["POST"])
+def query_system():
+    try:
+        data = request.get_json()
+        query_data = QueryRequest(**data)
+
+        # Retrieve documents and process query
+        retrieved_docs = retrieve_relevant_documents(query_data.query, query_data.top_k)
+        if not retrieved_docs:
+            return jsonify({"response": "No relevant documents found."}), 200
+
+        # Generate response using LangChain QA chain
+        response = qa_chain.run(input_documents=retrieved_docs, question=query_data.query)
+        return jsonify({"response": response}), 200
+
+    except Exception as e:
+        logging.error(f"Error processing query: {e}")
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=9005, debug=True)
+
+=============
+class CustomLlamaLLM(LLM):
+    api_url: str = Field(default="http://ollama-container:11434/api/generate")
+    def _call(self, prompt: str, stop=None) -> str:
+        try:
+            payload = {
+                "model": "llama3:latest",
+                "prompt": prompt,
+            }
+            response = requests.post(self.api_url, json=payload, stream=True)
+            if response.status_code == 200:
+                full_response = ""
+                for line in response.iter_lines():
+                    if line:
+                        try:
+                            result = json.loads(line.decode('utf-8'))
+                            full_response += result.get("response", "")
+                            if result.get("done", False):
+                                break
+                        except json.JSONDecodeError as e:
+                            logging.error(f"JSON decode error: {e}")
+                            continue
+                return full_response.strip()
+            else:
+                logging.error(f"Ollama API error: {response.status_code}, {response.text}")
+                return "Error: Unable to generate response."
+        except requests.exceptions.RequestException as e:
+            logging.error(f"API request error: {e}")
+            return "Error: Unable to reach Ollama API."
+    @property
+    def _identifying_params(self):
+        return {"api_url": self.api_url}
+    @property
+    def _llm_type(self) -> str:
+        return "custom_llama_llm"
+-------
+
+llama_llm = CustomLlamaLLM(api_url=f"{ollama_host}/api/generate")
+
+retriever = vectordb.as_retriever(search_kwargs={"k": 3})
+doc_grader_prompt_formatted = doc_grader_prompt.format(document=doc_txt, question=question)
+result = llama_llm.invoke(
+    [SystemMessage(content=doc_grader_instructions)]
+    + [HumanMessage(content=doc_grader_prompt_formatted)]
+)
+
+generation = llama_llm.invoke([HumanMessage(content=rag_prompt_formatted)])
+
+docs = retriever.invoke(question)
+doc_txt = docs[1].page_content
+doc_grader_prompt_formatted = doc_grader_prompt.format(document=doc_txt, question=question)
+result = llama_llm.invoke(
+    [SystemMessage(content=doc_grader_instructions)]
+    + [HumanMessage(content=doc_grader_prompt_formatted)]
+)
+
+hallucination_grader_prompt = """FACTS: \n\n {documents} \n\n STUDENT ANSWER: {generation}. 
+
+Return JSON with two two keys, binary_score is 'yes' or 'no' score to indicate whether the STUDENT ANSWER is grounded in the FACTS. And a key, explanation, that contains an explanation of the score."""
+
+# Test using documents and generation from above
+hallucination_grader_prompt_formatted = hallucination_grader_prompt.format(
+    documents=docs_txt, generation=generation
+)
+
+result = llama_llm.invoke(
+    [SystemMessage(content=hallucination_grader_instructions)]
+    + [HumanMessage(content=hallucination_grader_prompt_formatted)]
+)
+
+
+result = llama_llm.invoke(
+     [SystemMessage(content=doc_grader_instructions)]
+     + [HumanMessage(content=doc_grader_prompt_formatted)]
+)
+
+
+hallucination_grader_prompt_formatted = hallucination_grader_prompt.format(
+    documents=docs_txt, generation=generation
+)

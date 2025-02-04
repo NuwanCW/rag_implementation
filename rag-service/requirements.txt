@@ -1,0 +1,17 @@
+requests
+chromadb
+flask
+pydantic
+transformers
+scikit-learn
+numpy
+# sentence-transformers  # For query embedding (using Sentence-BERT)
+langchain 
+langchain_community 
+tiktoken 
+langchain-nomic 
+nomic[local]
+langchain-ollama 
+langgraph 
+tavily-python 
+bs4

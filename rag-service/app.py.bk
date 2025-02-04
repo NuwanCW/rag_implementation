@@ -1,0 +1,156 @@
+import requests
+import numpy as np
+from flask import Flask, request, jsonify
+import chromadb
+from pydantic import BaseModel
+from sentence_transformers import SentenceTransformer
+import numpy as np
+import chromadb
+from chromadb.config import Settings
+from sklearn.metrics.pairwise import cosine_similarity
+import logging
+import requests
+import json
+
+# Initialize the Sentence-BERT model for embedding queries and documents
+model = SentenceTransformer('all-MiniLM-L6-v2')  # You can choose other models
+# Chromadb Client
+client = chromadb.Client()
+client = chromadb.HttpClient(host="chromadb-container", port=8000, settings=Settings(allow_reset=True, anonymized_telemetry=False))
+collection = client.get_collection("documents")
+# collection = client.get_or_create_collection("documents")
+
+# Ollama API endpoint
+ollama_host = "http://ollama-container:11434"  # Ollama's exposed port
+
+# Log setup
+logging.basicConfig(level=logging.INFO)
+
+def retrieve_relevant_documents(query: str, top_k=1):
+    """
+    Retrieve top-k most relevant documents from the database using the query's embedding.
+
+    Args:
+        query (str): The query string for which we need to find relevant documents.
+        top_k (int): The number of relevant documents to retrieve.
+
+    Returns:
+        List of str: The list of relevant documents.
+    """
+    try:
+        # Convert the query to an embedding using Sentence-BERT
+        query_embedding = model.encode(query)
+        logging.info(f"Query embedding generated: {query[:30]}...")
+
+        # Query Chromadb for relevant documents
+        results = collection.query(query_embeddings=[query_embedding], n_results=top_k)
+        documents = results['documents']
+
+        logging.info(f"Retrieved {len(documents)} documents from the database.")
+        logging.info(f"documents is {documents}")
+        return documents
+
+    except Exception as e:
+        logging.error(f"Error in retrieving documents: {e}")
+        return []
+
+
+def generate_response(query: str, retrieved_docs: list):
+    """
+    Generate a response using the Ollama API by sending the query and retrieved documents.
+
+    Args:
+        query (str): The original query that needs an answer.
+        retrieved_docs (list): The list of documents retrieved based on the query.
+
+    Returns:
+        str: The generated response from Ollama.
+    """
+    try:
+        # Combine the query and the top-k documents to form the context
+        flat_docs = [doc for sublist in retrieved_docs for doc in sublist]
+        
+        context = " ".join(flat_docs)
+        # input_text = f"Question: {query}\nContext: {context}\nAnswer:"
+        input_text = f"Context information is below.\n {context}\nGiven the context information above I want you to think step by step to answer the query in a crisp and accurate manner by understanding the context, incase case you don't know the answer say 'I don't know!'.\nQuery: {query}\nAnswer:"
+
+        # Log the input before sending it to Ollama (for debugging)
+        logging.info(f"Sending request to Ollama with input: {input_text[:100]}...")
+
+        # Define the payload, including the model name and prompt
+        payload = {
+            "model": "llama3:latest",  # Specify the correct model
+            "prompt": input_text       # The actual prompt to be sent to Ollama
+        }
+
+        # Send the combined query and context to Ollama's API
+        response = requests.post(f"{ollama_host}/api/generate", json=payload, stream=True)
+
+        logging.info(f"response: {response}")
+        # logging.info(f"Raw response text: {response.text}")
+
+        # Check for successful response
+        if response.status_code == 200:
+            full_response = ""
+            # Iterate over the response in lines (chunks)
+            for line in response.iter_lines():
+                if line:  # Ignore empty lines
+                    try:
+                        # Parse each line as JSON
+                        result = json.loads(line.decode('utf-8'))
+                        logging.info(f"Chunk: {result}")
+
+                        # Collect the response text
+                        full_response += result.get("response", "")
+
+                        # Check if the response is complete (done = true)
+                        if result.get("done", False):
+                            logging.info("Response is complete.")
+                            break
+
+                    except json.JSONDecodeError as e:
+                        logging.error(f"JSON decode error: {e}")
+                        continue
+
+            full_response = full_response.strip()
+
+            logging.info(f"Generated response from Ollama: {full_response[:100]}...")
+            return full_response
+
+        else:
+            logging.error(f"Ollama API error: {response.status_code}, {response.text}")
+            return f"Error: Unable to generate response (status {response.status_code})."
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error during API request: {e}")
+        return f"Error: Unable to reach Ollama API. Please try again later."
+
+# Initialize Flask app
+app = Flask(__name__)
+
+# Request schema for query input
+class QueryRequest(BaseModel):
+    query: str
+    top_k: int = 1
+    
+# Define route for query input
+@app.route("/query", methods=["POST"])
+def query_system():
+    try:
+        # Parse incoming JSON data
+        data = request.get_json()
+        query_data = QueryRequest(**data)
+
+        # Retrieve relevant documents from Chromadb
+        retrieved_docs = retrieve_relevant_documents(query_data.query, query_data.top_k)
+
+        # Generate response using Ollama (LLaMA model)
+        response = generate_response(query_data.query, retrieved_docs)
+        
+        return jsonify({"response": response}), 200
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=9005, debug=True)

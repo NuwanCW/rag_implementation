@@ -1,0 +1,249 @@
+from flask import Flask, request, jsonify
+from pydantic import BaseModel
+import logging
+import json
+import chromadb
+from langchain_ollama import ChatOllama
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import SKLearnVectorStore
+from langchain_nomic.embeddings import NomicEmbeddings
+from langchain.schema import Document
+from langchain_core.messages import HumanMessage, SystemMessage
+from chromadb.config import Settings
+from langchain_community.vectorstores import Chroma
+from langchain.llms.base import LLM
+from pydantic import Field
+# Initialize Flask app
+app = Flask(__name__)
+
+# class CustomLlamaLLM(LLM):
+#     api_url: str = Field(default="http://ollama-container:11434/api/generate")
+#     def _call(self, prompt: str, stop=None) -> str:
+#         try:
+#             payload = {
+#                 "model": "llama3:latest",
+#                 "prompt": prompt,
+#             }
+#             response = requests.post(self.api_url, json=payload, stream=True)
+#             if response.status_code == 200:
+#                 full_response = ""
+#                 for line in response.iter_lines():
+#                     if line:
+#                         try:
+#                             result = json.loads(line.decode('utf-8'))
+#                             full_response += result.get("response", "")
+#                             if result.get("done", False):
+#                                 break
+#                         except json.JSONDecodeError as e:
+#                             logging.error(f"JSON decode error: {e}")
+#                             continue
+#                 return full_response.strip()
+#             else:
+#                 logging.error(f"Ollama API error: {response.status_code}, {response.text}")
+#                 return "Error: Unable to generate response."
+#         except requests.exceptions.RequestException as e:
+#             logging.error(f"API request error: {e}")
+#             return "Error: Unable to reach Ollama API."
+#     @property
+#     def _identifying_params(self):
+#         return {"api_url": self.api_url}
+#     @property
+#     def _llm_type(self) -> str:
+#         return "custom_llama_llm"
+
+# Llama model setup
+local_llm = "llama3:latest"
+llm_json_mode = ChatOllama(model=local_llm, temperature=0, format="json")
+llm = ChatOllama(model=local_llm, temperature=0)
+chroma_client = chromadb.HttpClient(
+    host="chromadb-container",
+    port=8000,
+    settings=Settings(allow_reset=True, anonymized_telemetry=False),
+)
+
+# vectorstore = Chroma.from_documents(
+#     documents=documents,
+#     embedding=embedding_function,
+#     client=chroma_client,
+#     collection_name="my_collection",
+# )
+embedding_function = NomicEmbeddings(model="nomic-embed-text-v1.5", inference_mode="local")
+
+vectorstore = Chroma(
+    client=chroma_client,  # Use your ChromaDB client
+    collection_name="documents",  # Change as needed
+    embedding_function=embedding_function,
+)
+
+
+
+# Llama API configuration
+ollama_host = "http://ollama-container:11434"
+
+# Logging setup
+logging.basicConfig(level=logging.INFO)
+embedding_model = NomicEmbeddings(model="nomic-embed-text-v1.5", inference_mode="local")
+# collection = client.get_or_create_collection("documents")
+# # Create a retriever
+# retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+
+# retriever = vectordb.as_retriever(search_kwargs={"k": 3})
+
+# Instructions for graders
+
+router_instructions = """You are an expert at routing a user question to a vectorstore.
+The vectorstore contains documents related to Bible studies and messages.
+Use the vectorstore for questions on these topics.
+Return JSON with single key, datasource, that is 'vectorstore'."""
+
+
+# Doc grader instructions
+doc_grader_instructions = """You are a grader assessing relevance of a retrieved document to a user question.
+If the document contains keyword(s) or semantic meaning related to the question, grade it as relevant."""
+
+# Grader prompt
+doc_grader_prompt = """Here is the retrieved document: \n\n {document} \n\n Here is the user question: \n\n {question}. 
+This carefully and objectively assess whether the document contains at least some information that is relevant to the question.
+Return JSON with single key, binary_score, that is 'yes' or 'no' score to indicate whether the document contains at least some information that is relevant to the question."""
+
+
+rag_prompt = """You are an assistant for question-answering tasks. 
+Here is the context to use to answer the question:
+{context} 
+Think carefully about the above context. 
+Now, review the user question:
+{question}
+Provide an answer to this questions using only the above context. 
+Use three sentences maximum and keep the answer concise.
+Answer:"""
+
+hallucination_grader_instructions = """
+You are a teacher grading a quiz. 
+You will be given FACTS and a STUDENT ANSWER. 
+Here is the grade criteria to follow:
+(1) Ensure the STUDENT ANSWER is grounded in the FACTS. 
+(2) Ensure the STUDENT ANSWER does not contain "hallucinated" information outside the scope of the FACTS.
+Score:
+A score of yes means that the student's answer meets all of the criteria. This is the highest (best) score. 
+A score of no means that the student's answer does not meet all of the criteria. This is the lowest possible score you can give.
+Explain your reasoning in a step-by-step manner to ensure your reasoning and conclusion are correct. 
+Avoid simply stating the correct answer at the outset."""
+
+# Grader prompt
+hallucination_grader_prompt = """FACTS: \n\n {documents} \n\n STUDENT ANSWER: {generation}. 
+Return JSON with two two keys, binary_score is 'yes' or 'no' score to indicate whether the STUDENT ANSWER is grounded in the FACTS. And a key, explanation, that contains an explanation of the score."""
+
+# Answer grader instructions
+answer_grader_instructions = """You are a teacher grading a quiz. 
+You will be given a QUESTION and a STUDENT ANSWER. 
+Here is the grade criteria to follow:
+(1) The STUDENT ANSWER helps to answer the QUESTION
+Score:
+A score of yes means that the student's answer meets all of the criteria. This is the highest (best) score. 
+The student can receive a score of yes if the answer contains extra information that is not explicitly asked for in the question.
+A score of no means that the student's answer does not meet all of the criteria. This is the lowest possible score you can give.
+Explain your reasoning in a step-by-step manner to ensure your reasoning and conclusion are correct. 
+Avoid simply stating the correct answer at the outset."""
+
+# Grader prompt
+answer_grader_prompt = """QUESTION: \n\n {question} \n\n STUDENT ANSWER: {generation}. 
+Return JSON with two two keys, binary_score is 'yes' or 'no' score to indicate whether the STUDENT ANSWER meets the criteria. And a key, explanation, that contains an explanation of the score."""
+
+
+
+# API request schema for query input
+class QueryRequest(BaseModel):
+    query: str
+    top_k: int = 1
+
+# Retrieve relevant documents using ChromaDB
+def retrieve_relevant_documents(query: str, top_k: int = 3):
+    try:
+        collection = chroma_client.get_collection("documents")
+        query_embedding = model.encode(query)
+        results = collection.query(query_embeddings=[query_embedding], n_results=top_k)
+        documents = results['documents']
+        return [Document(page_content=doc) for doc in documents]
+    except Exception as e:
+        logging.error(f"Error retrieving documents: {e}")
+        return []
+
+# Define function to handle grader instructions
+def grade_document_relevance(doc_txt, question):
+    doc_grader_prompt = f"""Here is the retrieved document: \n\n {doc_txt} \n\n Here is the user question: \n\n {question}. 
+    This carefully and objectively assess whether the document contains at least some information that is relevant to the question."""
+    result = llm_json_mode.invoke(
+        [SystemMessage(content=doc_grader_instructions)] + [HumanMessage(content=doc_grader_prompt)]
+    )
+    return json.loads(result.content)
+
+def grade_hallucination(doc_txt, generation):
+    hallucination_grader_prompt = f"""FACTS: \n\n {doc_txt} \n\n STUDENT ANSWER: {generation}. """
+    result = llm_json_mode.invoke(
+        [SystemMessage(content=hallucination_grader_instructions)] + [HumanMessage(content=hallucination_grader_prompt)]
+    )
+    return json.loads(result.content)
+
+def grade_answer(question, generation):
+    answer_grader_prompt = f"""QUESTION: \n\n {question} \n\n STUDENT ANSWER: {generation}. """
+    result = llm_json_mode.invoke(
+        [SystemMessage(content=answer_grader_instructions)] + [HumanMessage(content=answer_grader_prompt)]
+    )
+    return json.loads(result.content)
+
+# Text splitting and vector store setup
+text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+    chunk_size=1000, chunk_overlap=200
+)
+
+def create_vector_store(docs_list):
+    doc_splits = text_splitter.split_documents(docs_list)
+    vectorstore = SKLearnVectorStore.from_documents(
+        documents=doc_splits,
+        embedding=NomicEmbeddings(model="nomic-embed-text-v1.5", inference_mode="local"),
+    )
+    return vectorstore.as_retriever(k=3)
+
+# API route for query handling
+@app.route("/query", methods=["POST"])
+def query_system():
+    try:
+        data = request.get_json()
+        query_data = QueryRequest(**data)
+
+        # Retrieve documents using ChromaDB
+        retrieved_docs = retrieve_relevant_documents(query_data.query, query_data.top_k)
+        if not retrieved_docs:
+            return jsonify({"response": "No relevant documents found."}), 200
+
+        # Split documents and create vector store retriever
+        docs_list = [doc.page_content for doc in retrieved_docs]
+        retriever = create_vector_store(docs_list)
+
+        # Select top k relevant docs and grade them
+        docs_txt = "\n\n".join([doc.page_content for doc in retrieved_docs])
+        grader_results = [grade_document_relevance(doc.page_content, query_data.query) for doc in retrieved_docs]
+        if all(res['binary_score'] == 'no' for res in grader_results):
+            return jsonify({"response": "No relevant documents found."}), 200
+
+        # Generate response using LangChain QA chain
+        context = "\n\n".join([doc.page_content for doc in retrieved_docs])
+        rag_prompt = f"""You are an assistant for question-answering tasks. Here is the context to use to answer the question: {context} Now, review the user question: {query_data.query} Provide an answer using only the above context. Use three sentences maximum and keep the answer concise. Answer:"""
+        generation = llm_json_mode.invoke([HumanMessage(content=rag_prompt)])
+
+        # Grade the hallucinations and final answer
+        hallucination_grade = grade_hallucination(docs_txt, generation.content)
+        answer_grade = grade_answer(query_data.query, generation.content)
+
+        # Check if everything is okay and return the final response
+        if hallucination_grade['binary_score'] == 'no' or answer_grade['binary_score'] == 'no':
+            return jsonify({"response": "Answer is not appropriate."}), 200
+
+        return jsonify({"response": generation.content}), 200
+
+    except Exception as e:
+        logging.error(f"Error processing query: {e}")
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=9005, debug=True)
